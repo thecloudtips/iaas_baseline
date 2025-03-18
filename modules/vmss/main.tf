@@ -121,7 +121,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "frontend" {
 
   admin_ssh_key {
     username   = local.default_admin_user_name
-    public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCcFvQl2lYPcK1tMB3Tx2R9n8a7w5MJCSef14x0ePRFr9XISWfCVCNKRLM3Al/JSlIoOVKoMsdw5farEgXkPDK5F+SKLss7whg2tohnQNQwQdXit1ZjgOXkis/uft98Cv8jDWPbhwYj+VH/Aif9rx8abfjbvwVWBGeA/OnvfVvXnr1EQfdLJgMTTh+hX/FCXCqsRkQcD91MbMCxpqk8nP6jmsxJBeLrgfOxjH8RHEdSp4fF76YsRFHCi7QOwTE/6U+DpssgQ8MTWRFRat97uTfcgzKe5MOfuZHZ++5WFBgaTr1vhmSbXteGiK7dQXOk2cLxSvKkzeaiju9Jy6hoSl5oMygUVd5fNPQ94QcqTkMxZ9tQ9vPWOHwbdLRD31Ses3IBtDV+S6ehraiXf/L/e0jRUYk8IL/J543gvhOZ0hj2sQqTj9XS2hZkstZtrB2ywrJzV5ByETUU/oF9OsysyFgnaQdyduVqEPHaqXqnJvBngqqas91plyT3tSLMez3iT0s= unused-generated-by-azure"
+    public_key = var.ssh_public_key
   }
 
   automatic_instance_repair {
@@ -253,7 +253,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "frontend" {
   depends_on = [
     azurerm_role_assignment.frontend_secrets_user,
     azurerm_role_assignment.frontend_key_vault_reader,
-    azurerm_windows_virtual_machine_scale_set.backend,
+    azurerm_linux_virtual_machine_scale_set.backend,
     azurerm_private_dns_a_record.backend,
     azurerm_private_dns_zone_virtual_network_link.contoso,
     data.azurerm_private_dns_zone_virtual_network_link.key_vault,
@@ -262,26 +262,33 @@ resource "azurerm_linux_virtual_machine_scale_set" "frontend" {
   ]
 }
 
-# Backend VMSS (Windows)
-resource "azurerm_windows_virtual_machine_scale_set" "backend" {
-  name                        = "vmss-backend"
-  resource_group_name         = local.resource_group_name
-  location                    = local.location
-  sku                         = "Standard_E2s_v3"
-  instances                   = 3
-  admin_username              = local.default_admin_user_name
-  admin_password              = var.admin_password
-  upgrade_mode                = "Automatic"
-  single_placement_group      = false
-  platform_fault_domain_count = 1
-  zones                       = local.zones
-  overprovision               = false
+# Backend VMSS (Linux) - Converted from Windows
+resource "azurerm_linux_virtual_machine_scale_set" "backend" {
+  name                            = "vmss-backend"
+  resource_group_name             = local.resource_group_name
+  location                        = local.location
+  sku                             = "Standard_E2s_v3"
+  instances                       = 3
+  admin_username                  = local.default_admin_user_name
+  custom_data                     = var.backend_cloud_init_as_base64
+  health_probe_id                 = null
+  upgrade_mode                    = "Automatic"
+  disable_password_authentication = true
+  overprovision                   = false
+  single_placement_group          = false
+  platform_fault_domain_count     = 1
+  zones                           = local.zones
 
   identity {
     type = "UserAssigned"
     identity_ids = [
       azurerm_user_assigned_identity.backend.id
     ]
+  }
+
+  admin_ssh_key {
+    username   = local.default_admin_user_name
+    public_key = var.ssh_public_key
   }
 
   automatic_instance_repair {
@@ -303,9 +310,9 @@ resource "azurerm_windows_virtual_machine_scale_set" "backend" {
   }
 
   source_image_reference {
-    publisher = "MicrosoftWindowsServer"
-    offer     = "WindowsServer"
-    sku       = "2022-datacenter-azure-edition-smalldisk"
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-focal"
+    sku       = "20_04-lts-gen2"
     version   = "latest"
   }
 
@@ -333,57 +340,45 @@ resource "azurerm_windows_virtual_machine_scale_set" "backend" {
   }
 
   extension {
-    name                       = "AADLogin"
+    name                       = "AADSSHLogin"
     publisher                  = "Microsoft.Azure.ActiveDirectory"
-    type                       = "AADLoginForWindows"
-    type_handler_version       = "2.0"
+    type                       = "AADSSHLoginForLinux"
+    type_handler_version       = "1.0"
     auto_upgrade_minor_version = true
-    settings = jsonencode({
-      mdmId = ""
-    })
   }
 
   extension {
-    name                       = "KeyVaultForWindows"
+    name                       = "KeyVaultForLinux"
     publisher                  = "Microsoft.Azure.KeyVault"
-    type                       = "KeyVaultForWindows"
-    type_handler_version       = "3.0"
+    type                       = "KeyVaultForLinux"
+    type_handler_version       = "2.0"
     auto_upgrade_minor_version = true
-    automatic_upgrade_enabled  = true
     settings = jsonencode({
       secretsManagementSettings = {
-        observedCertificates = [
-          {
-            certificateStoreName     = "MY"
-            certificateStoreLocation = "LocalMachine"
-            keyExportable            = true
-            url                      = var.vmss_workload_public_and_private_public_certs_secret_uri
-            accounts                 = ["Network Service", "Local Service"]
-          }
-        ]
-        linkOnRenewal      = true
-        pollingIntervalInS = "3600"
+        certificateStoreLocation = "/var/lib/waagent/Microsoft.Azure.KeyVault.Store"
+        observedCertificates     = [var.vmss_workload_public_and_private_public_certs_secret_uri]
+        pollingIntervalInS       = "3600"
       }
     })
   }
 
   extension {
     name                       = "CustomScript"
-    publisher                  = "Microsoft.Compute"
-    type                       = "CustomScriptExtension"
-    type_handler_version       = "1.10"
+    publisher                  = "Microsoft.Azure.Extensions"
+    type                       = "CustomScript"
+    type_handler_version       = "2.1"
     auto_upgrade_minor_version = true
     protected_settings = jsonencode({
-      commandToExecute = "powershell -ExecutionPolicy Unrestricted -File configure-nginx-backend.ps1"
-      fileUris         = ["https://raw.githubusercontent.com/mspnp/iaas-baseline/main/configure-nginx-backend.ps1"]
+      commandToExecute = "sh configure-nginx-backend.sh"
+      fileUris         = ["https://raw.githubusercontent.com/mspnp/iaas-baseline/main/configure-nginx-backend.sh"]
     })
   }
 
   extension {
-    name                       = "AzureMonitorWindowsAgent"
+    name                       = "AzureMonitorLinuxAgent"
     publisher                  = "Microsoft.Azure.Monitor"
-    type                       = "AzureMonitorWindowsAgent"
-    type_handler_version       = "1.14"
+    type                       = "AzureMonitorLinuxAgent"
+    type_handler_version       = "1.25"
     auto_upgrade_minor_version = true
     automatic_upgrade_enabled  = true
     settings = jsonencode({
@@ -397,9 +392,9 @@ resource "azurerm_windows_virtual_machine_scale_set" "backend" {
   }
 
   extension {
-    name                       = "DependencyAgentWindows"
+    name                       = "DependencyAgentLinux"
     publisher                  = "Microsoft.Azure.Monitoring.DependencyAgent"
-    type                       = "DependencyAgentWindows"
+    type                       = "DependencyAgentLinux"
     type_handler_version       = "9.10"
     auto_upgrade_minor_version = true
     automatic_upgrade_enabled  = true
@@ -409,9 +404,9 @@ resource "azurerm_windows_virtual_machine_scale_set" "backend" {
   }
 
   extension {
-    name                       = "ApplicationHealthWindows"
+    name                       = "HealthExtension"
     publisher                  = "Microsoft.ManagedServices"
-    type                       = "ApplicationHealthWindows"
+    type                       = "ApplicationHealthLinux"
     type_handler_version       = "1.0"
     auto_upgrade_minor_version = true
     automatic_upgrade_enabled  = true
