@@ -41,10 +41,14 @@ variable "frontend_cloud_init_as_base64" {
   }
 }
 
-variable "admin_password" {
-  description = "The admin passwork for the Windows backend machines."
+variable "backend_cloud_init_as_base64" {
+  description = "Base64-encoded cloud-init configuration for backend VMs"
   type        = string
-  sensitive   = true
+}
+
+variable "ssh_public_key" {
+  description = "SSH public key for Linux VM authentication"
+  type        = string
 }
 
 variable "admin_security_principal_object_id" {
