@@ -1,4 +1,4 @@
-# Variables (equivalent to parameters in Bicep)
+# Variables for the IaaS baseline
 variable "location" {
   description = "IaaS region. This needs to be the same region as the vnet provided in these parameters."
   type        = string
